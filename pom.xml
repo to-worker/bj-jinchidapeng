@@ -544,18 +544,18 @@
         </plugins>
     </build>
 
-    <distributionManagement>
-        <repository>
-            <id>nexus-releases</id>
-            <name>Releases</name>
-            <url>http://172.30.6.10:8081/repository/maven-releases/</url>
-        </repository>
-        <snapshotRepository>
-            <id>nexus-snapshot</id>
-            <name>Snapshot</name>
-            <url>http://172.30.6.10:8081/repository/maven-snapshots/</url>
-        </snapshotRepository>
-    </distributionManagement>
+    <!--<distributionManagement>-->
+        <!--<repository>-->
+            <!--<id>nexus-releases</id>-->
+            <!--<name>Releases</name>-->
+            <!--<url>http://172.30.6.10:8081/repository/maven-releases/</url>-->
+        <!--</repository>-->
+        <!--<snapshotRepository>-->
+            <!--<id>nexus-snapshot</id>-->
+            <!--<name>Snapshot</name>-->
+            <!--<url>http://172.30.6.10:8081/repository/maven-snapshots/</url>-->
+        <!--</snapshotRepository>-->
+    <!--</distributionManagement>-->
 
     <repositories>
         <!--<repository>-->
