@@ -1,0 +1,10 @@
+
+branch from 2.0.2
+
+main function for monitor of streaming and kafka.
+
+main feature:
+1、multiThread write to solr and hbase without thread control.
+2、add date format according to systemParamter collection of mongodb.
+3、filter resid in doc task.
+4、fix bug in April to publish the mvp version.
