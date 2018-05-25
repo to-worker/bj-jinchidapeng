@@ -66,7 +66,9 @@ object SolrClient2Support extends Logging with Serializable {
 					batch.addAll(inputDocArr)
 					if (batch.size >= batchSize) sendBatchToSolr(solrServer, collection, batch)
 				}
-				if (!batch.isEmpty) sendBatchToSolr(solrServer, collection, batch)
+				if (!batch.isEmpty) {
+					sendBatchToSolr(solrServer, collection, batch)
+				}
 				solrServer.close()
 			}catch {
 				case ex:Exception => {

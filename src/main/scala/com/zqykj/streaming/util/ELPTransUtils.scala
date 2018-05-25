@@ -477,7 +477,7 @@ object ELPTransUtils extends Logging with Serializable {
 		val id_type_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
 		val id_type_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
 
-		if (StringUtils.isNotBlank(id_0) || StringUtils.isNotBlank(id_1)) {
+		if (StringUtils.isBlank(id_0) || StringUtils.isBlank(id_1)) {
 			return null
 		}
 
@@ -517,7 +517,7 @@ object ELPTransUtils extends Logging with Serializable {
 			solrDocument.setField(LinkContants.EDGE_DIRECTION_TYPE_FIELD, LinkContants.DIRECTION_UNIDIRECTIONAL)
 		}
 
-		solrDocument.setField(LinkContants.HBASE_TABLE_ROWKEY, id_label)
+		solrDocument.setField(LinkContants.HBASE_TABLE_ID, id_label)
 
 		solrDocument.setField(LinkContants.EDGE_TYPE_FIELD, elementLink.getUuid)
 		solrDocument.setField(LinkContants.EDGE_ID_FIELD, id_label)

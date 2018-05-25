@@ -13,4 +13,6 @@ object JobBusConstant {
 
 	val MAC_SPLIT_CHARACHTER = ":"
 
+	val RELATION_LINK_UUID_SEPATATOR = "_"
+
 }

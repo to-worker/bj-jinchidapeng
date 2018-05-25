@@ -439,7 +439,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 					val idType = jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
 					val mapping = entityMappings.get(idType)
 					// TODO
-					if (Option(mapping).nonEmpty){
+					if (Option(mapping).nonEmpty) {
 						val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
 						val property = elpAndMappingsCache.get(key)
 						if (property.nonEmpty) {
@@ -452,7 +452,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 						} else {
 							logError(s"=========> PropertyBag of key ${key} is empty from elpAndMappingsCache.")
 						}
-					}else {
+					} else {
 						logError(s"=========> mapping from idType:${idType} is null .")
 					}
 				}
@@ -464,14 +464,24 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 						for (j <- k to (arrSize - 1)) {
 							val jsonObj_0 = m.getJSONObject(i)
 							val jsonObj_1 = m.getJSONObject(j)
-							val linkMapkey = jsonObj_0.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+							var mapping: ElpModelDBMapping = null
+							var linkMapkey = jsonObj_0.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+								.concat(JobBusConstant.RELATION_LINK_UUID_SEPATATOR)
 								.concat(jsonObj_1.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
-							val mapping = linkMappings.get(linkMapkey)
-							val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
-							val property = elpAndMappingsCache.get(key)
-							if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
-								val solrInputDoc = ELPTransUtils.parseLinkWithResIdAtRelation(resourceId, jsonObj_0, jsonObj_1, property.get.asInstanceOf[Link], mapping)
-								links.add(solrInputDoc)
+							mapping = linkMappings.get(linkMapkey)
+							if (Option(mapping).isEmpty) {
+								linkMapkey = jsonObj_1.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+									.concat(JobBusConstant.RELATION_LINK_UUID_SEPATATOR)
+									.concat(jsonObj_0.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+								mapping = linkMappings.get(linkMapkey)
+							}
+							if (Option(mapping).nonEmpty) {
+								val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
+								val property = elpAndMappingsCache.get(key)
+								if (PropertyBag.Type.Link.equals(mapping.getElpTypeDesc)) {
+									val solrInputDoc = ELPTransUtils.parseLinkWithResIdAtRelation(resourceId, jsonObj_0, jsonObj_1, property.get.asInstanceOf[Link], mapping)
+									links.add(solrInputDoc)
+								}
 							}
 						}
 					}
@@ -541,14 +551,23 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 					solrData.cache()
 					val entityData = solrData.mapPartitions(solrMp => {
 						solrMp.map(m => m._1)
-					})
+					}).filter(f => f.size() > 0)
 					val linkData = solrData.mapPartitions(solrMp => {
 						solrMp.map(m => m._2)
-					})
+					}).filter(f => f.size() > 0)
+
+					val entityDataCount = entityData.count()
+					logInfo(s"entityCount:${entityDataCount}")
+					logMap.put("entityDataCount", entityDataCount.toString)
 					logInfo(s"index entity docs to ${JobPropertyConstant.SOLR_ENTITY_COLLECTION_NAME} collection.")
 					solrLoadExecutor.indexBatchDocs(JobPropertyConstant.SOLR_ENTITY_COLLECTION_NAME, entityData)
+
+					val linkDataCount = linkData.count()
+					logInfo(s"linkCount:${linkDataCount}")
+					logMap.put("linkDataCount", linkDataCount.toString)
 					logInfo(s"index link docs to ${JobPropertyConstant.SOLR_LINK_COLLECTION_NAME} collection.")
 					solrLoadExecutor.indexBatchDocs(JobPropertyConstant.SOLR_LINK_COLLECTION_NAME, linkData)
+
 					logMap.put("status", TaskElementStatus.successful.toString)
 				} else {
 					logInfo(s"processing wildcard table: ${tableName}")
