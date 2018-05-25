@@ -5,7 +5,7 @@ import java.util.Date
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import com.zqykj.batch.document.common.TaskElementStatus
 import com.zqykj.batch.transform.db.SolrLoadExecutor
-import com.zqykj.hyjj.entity.elp._
+import com.zqykj.hyjj.entity.elp.{ElpModel, ElpModelDBMapping, Entity, Link, PropertyBag, Directivity, Property}
 import com.zqykj.hyjj.query.{CompactLinkData, PropertyData}
 import com.zqykj.streaming.common.Contants._
 import com.zqykj.streaming.common.{Contants, JobBusConstant, JobConstants, JobPropertyConstant}
@@ -52,15 +52,20 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 	}
 
 	def readFiles(dirPath: String): RDD[String] = {
-		val filesPath = dirPath + JobPropertyConstant.PATH_SEPERATOR_DEFAULT + JobPropertyConstant.WILDCARD + JobPropertyConstant.FILE_SUFFIX_EXE
+		//val filesPath = dirPath + JobPropertyConstant.PATH_SEPERATOR_DEFAULT + JobPropertyConstant.WILDCARD + JobPropertyConstant.FILE_SUFFIX_EXE
+		val filteredFiles = filterFiles(dirPath, JobPropertyConstant.FILE_SUFFIX_EXE)
 		logInfo(s"=========> dirPath: ${dirPath}")
-		logInfo(s"=========> filesPath: ${filesPath}")
-		sc.textFile(filesPath)
+		//logInfo(s"=========> filesPath: ${filesPath}")
+		val rdds = new mutable.HashSet[RDD[String]]()
+		filteredFiles.foreach(filePath => {
+			rdds.add(sc.textFile(filePath))
+		})
+		sc.union(rdds.toArray)
 	}
 
 	def readAvroFile(dirPath: String): RDD[Row] = {
 		logInfo(s"=======> dirPath: ${dirPath}")
-		val filteredFilePaths = filterFiles(dirPath)
+		val filteredFilePaths = filterFiles(dirPath, JobConstants.avroExt)
 		if (Option(filteredFilePaths).isEmpty || filteredFilePaths.size <= 0) {
 			logWarning(s"=======> dirPath: ${dirPath} is not exist or the dirPath has no file.")
 			return null
@@ -84,7 +89,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 
 	}
 
-	def filterFiles(dirPath: String): mutable.HashSet[String] = {
+	def filterFiles(dirPath: String, exe: String): mutable.HashSet[String] = {
 		logInfo(s"=======> getFiles dirPath: ${dirPath}")
 		val avroPaths = new mutable.HashSet[String]()
 		val hadoopConfiguration = sc.hadoopConfiguration
@@ -106,7 +111,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		for (file: FileStatus <- files) {
 			if (file.isFile) {
 				val fileName = file.getPath.getName
-				if (fileName.contains(JobConstants.avroExt)) {
+				if (fileName.contains(exe)) {
 					logInfo(s"===========> fileName: ${fileName}, add avroPath: ${file.getPath.toString}")
 					avroPaths.add(file.getPath.toString)
 				}
@@ -393,14 +398,14 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 				val filterdJsonArr = new JSONArray()
 				val jSONArray = JSON.parseArray(m)
 				val size = jSONArray.size()
-				for (i <- 0 until(size - 1)){
+				for (i <- 0 to (size - 1)) {
 					val jsonObj = jSONArray.getJSONObject(i)
 					val idType = jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
 					val id = jsonObj.getString(JobBusConstant.RELATION_ID_NAME)
-					if (Option(idType).nonEmpty && Option(id).nonEmpty){
-						if (RelationConstant.RELATION_ID_TYPES.contains(idType)){
+					if (Option(idType).nonEmpty && Option(id).nonEmpty) {
+						if (RelationConstant.RELATION_ID_TYPES.contains(idType)) {
 							// 如果是mac地址，则去掉冒号
-							if (JobBusConstant.RELATION_SEPCIAL_MAC_TYPE.equals(idType)){
+							if (JobBusConstant.RELATION_SEPCIAL_MAC_TYPE.equals(idType)) {
 								jsonObj.put(JobBusConstant.RELATION_ID_NAME, id.replaceAll(JobBusConstant.MAC_SPLIT_CHARACHTER, ""))
 							}
 							filterdJsonArr.add(jsonObj)
@@ -428,31 +433,35 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 				val entities = new java.util.ArrayList[SolrInputDocument]()
 				val links = new java.util.ArrayList[SolrInputDocument]()
 				// TODO parse entity
-				for (i <- 0 until (arrSize - 1)) {
+				for (i <- 0 to (arrSize - 1)) {
 					val jsonObj = m.getJSONObject(i)
 					// TODO relation id_type -> elp mapping
-					val mapping = entityMappings.get(jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+					val idType = jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+					val mapping = entityMappings.get(idType)
 					// TODO
-					val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
-					val property = elpAndMappingsCache.get(key)
-					if (property.nonEmpty) {
-						if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
-							val solrInputDoc = ELPTransUtils.parseEntityWithResIdAtRelation(resourceId, jsonObj, property.get.asInstanceOf[Entity], mapping)
-							entities.add(solrInputDoc)
+					if (Option(mapping).nonEmpty){
+						val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
+						val property = elpAndMappingsCache.get(key)
+						if (property.nonEmpty) {
+							if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
+								val solrInputDoc = ELPTransUtils.parseEntityWithResIdAtRelation(resourceId, jsonObj, property.get.asInstanceOf[Entity], mapping)
+								entities.add(solrInputDoc)
+							} else {
+								logError(s"=========> PropertyBag:${property} is not Entity.")
+							}
 						} else {
-							logError(s"=========> PropertyBag:${property} is not Entity.")
+							logError(s"=========> PropertyBag of key ${key} is empty from elpAndMappingsCache.")
 						}
-					} else {
-						logError(s"=========> PropertyBag of key ${key} is empty from elpAndMappingsCache.")
+					}else {
+						logError(s"=========> mapping from idType:${idType} is null .")
 					}
-
 				}
 
 				// TODO parse link
 				if (arrSize >= 2) {
-					for (i <- 0 until (arrSize - 2)) {
+					for (i <- 0 to (arrSize - 2)) {
 						var k = i + 1
-						for (j <- k until (arrSize - 1)) {
+						for (j <- k to (arrSize - 1)) {
 							val jsonObj_0 = m.getJSONObject(i)
 							val jsonObj_1 = m.getJSONObject(j)
 							val linkMapkey = jsonObj_0.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
@@ -482,9 +491,9 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		mappings.foreach(mapping => {
 			val elpTypeDesc = mapping.getElpTypeDesc.toString
 			if ("Entity".equals(elpTypeDesc)) {
-				entityMappings.put(mapping.getElpType, mapping)
+				entityMappings.put(mapping.getUuid, mapping)
 			} else if ("Link".equals(elpTypeDesc)) {
-				linkMappings.put(mapping.getElpType, mapping)
+				linkMappings.put(mapping.getUuid, mapping)
 			}
 		})
 		(entityMappings, linkMappings)
@@ -516,11 +525,18 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 					logInfo(s"=======> entity mapping has ${elMappings._1.size()} from relation")
 					logInfo(s"=======> link mapping has ${elMappings._2.size()} from relation")
 					val srcRDD = readFiles(dirPath)
+
+					if (Option(srcRDD).isEmpty) {
+						logWarning(s"read none data from ${dirPath}")
+						return
+					}
 					val srcCount = srcRDD.count()
 					logInfo(s"=======> source count: ${srcCount}")
 					logMap.put("srcCount", srcCount.toString)
 					val jsonArrayRDD = parseJsonArray(srcRDD)
-					logMap.put("countAfterPaseJson", jsonArrayRDD.count().toString)
+					val countAfterParse = jsonArrayRDD.count().toString
+					logMap.put("countAfterParseJson", countAfterParse)
+					logInfo(s"========> countAfterParseJson:${countAfterParse}")
 					val solrData = transElpData(elMappings._1, elMappings._2, dBMappings.get, jsonArrayRDD)
 					solrData.cache()
 					val entityData = solrData.mapPartitions(solrMp => {
@@ -560,7 +576,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			} else {
 				logError(s"===========> dsId: ${dsId}, dBMappings is empty.")
 				logMap.put("status", TaskElementStatus.failure.toString)
-				logMap.put("error info", "dBMappings is empty.")
+				logMap.put("==========> error info", "dBMappings is empty.")
 			}
 		} catch {
 			case ex: Exception => {

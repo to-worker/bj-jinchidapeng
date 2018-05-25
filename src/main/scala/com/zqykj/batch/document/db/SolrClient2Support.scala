@@ -13,7 +13,6 @@ import scala.collection.mutable
 
 /**
   * @author feng.wei
-  * @date 2018/5/23
   */
 object SolrClient2Support extends Logging with Serializable {
 
@@ -60,7 +59,6 @@ object SolrClient2Support extends Logging with Serializable {
 				logInfo("=======> beginning solrInputDocumentIterator foreach：indexDocs zkHost:${zkHost}, zkChroot:${zkChroot}, batch:${batchSize}")
 				val solrServer = getSolrServer(zkHost, zkChroot, collection)
 				val batch = new java.util.ArrayList[SolrInputDocument]
-				val indexedAt = new Date
 				while ( {
 					solrInputDocArrIterator.hasNext
 				}) {

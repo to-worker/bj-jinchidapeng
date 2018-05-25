@@ -333,7 +333,7 @@ object ELPTransUtils extends Logging with Serializable {
 			solrDocument.setField(EntityConstants.VERTEX_ID_FILED, entityId)
 			solrDocument.setField(EntityConstants.VERTEX_TYPE_FILED, elementEntity.getUuid)
 			solrDocument.setField(EntityConstants.VERTEXT_RESID, resourceId)
-			solrDocument.setField(JobBusConstant.RELATION_ID_TYPE_NAME, jsonBody.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+			//solrDocument.setField("g_tk11_" + JobBusConstant.RELATION_ID_TYPE_NAME, jsonBody.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
 			solrDocument.addField("_indexed_at_tdt", new Date())
 		} catch {
 			case ex: RuntimeException => logError("=============> 解析实体数据异常", ex)
