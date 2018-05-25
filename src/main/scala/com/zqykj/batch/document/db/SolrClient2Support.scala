@@ -9,6 +9,8 @@ import org.apache.solr.common.{SolrException, SolrInputDocument}
 import org.apache.spark.Logging
 import org.apache.spark.rdd.RDD
 
+import scala.collection.mutable
+
 /**
   * @author feng.wei
   * @date 2018/5/23
@@ -50,6 +52,34 @@ object SolrClient2Support extends Logging with Serializable {
 
 		})
 	}
+
+	def indexBatchDocs(zkHost: String, zkChroot: String, collection: String, batchSize: Int, docs: RDD[java.util.ArrayList[SolrInputDocument]]): Unit = {
+		logInfo(s"=======> indexDocs zkHost:${zkHost}, zkChroot:${zkChroot}, batch:${batchSize}")
+		docs.foreachPartition(solrInputDocArrIterator => {
+			try {
+				logInfo("=======> beginning solrInputDocumentIterator foreach：indexDocs zkHost:${zkHost}, zkChroot:${zkChroot}, batch:${batchSize}")
+				val solrServer = getSolrServer(zkHost, zkChroot, collection)
+				val batch = new java.util.ArrayList[SolrInputDocument]
+				val indexedAt = new Date
+				while ( {
+					solrInputDocArrIterator.hasNext
+				}) {
+					val inputDocArr = solrInputDocArrIterator.next
+					batch.addAll(inputDocArr)
+					if (batch.size >= batchSize) sendBatchToSolr(solrServer, collection, batch)
+				}
+				if (!batch.isEmpty) sendBatchToSolr(solrServer, collection, batch)
+				solrServer.close()
+			}catch {
+				case ex:Exception => {
+					logError(s"=======> indexDocs foreachPartition has error: ${ex.getStackTraceString}")
+					throw new Exception(ex.getMessage, ex)
+				}
+			}
+
+		})
+	}
+
 
 	def sendBatchToSolr(cloudSolrClient: CloudSolrClient, collection: String, batch: java.util.Collection[SolrInputDocument]): Unit = {
 		try {

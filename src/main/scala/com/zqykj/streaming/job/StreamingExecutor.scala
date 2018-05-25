@@ -145,7 +145,7 @@ class StreamingExecutor(@transient val sc: SparkContext,
 				if (!property.isEmpty) {
 					val sequenceId = DistIdUtils.getSequenceId()
 					if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
-						val elpEntityData = Option(parseEntity(jsonObj, property.get.asInstanceOf[Entity], mapping))
+						val elpEntityData = Option(ELPTransUtils.parseEntity(jsonObj, property.get.asInstanceOf[Entity], mapping))
 						// (elpId_entity_elpType, elpEntityData)
 						// sequenceId@elp_entity_elpType@resid@taskid
 						if (elpEntityData.nonEmpty) {
@@ -156,7 +156,7 @@ class StreamingExecutor(@transient val sc: SparkContext,
 						}
 					} else if (PropertyBag.Type.Link.equals(mapping.getElpTypeDesc)) {
 						// (elpId_relation_elpType, elpLinkData)
-						val elpLinkData = Option(parseLink(jsonObj, property.get.asInstanceOf[Link], mapping, elpModelCache.get(mapping.getElp).get))
+						val elpLinkData = Option(ELPTransUtils.parseLink(jsonObj, property.get.asInstanceOf[Link], mapping, elpModelCache.get(mapping.getElp).get))
 						if (elpLinkData.nonEmpty) {
 							elMap.put(sequenceId + SEQUENCEID_DATASCHEMAID_RESID
 								+ mapping.getElp + ELP_MAPPING_SEPARATOR + LinkContants.ELP_LINK + ELP_MAPPING_SEPARATOR + mapping.getElpType
@@ -281,204 +281,7 @@ class StreamingExecutor(@transient val sc: SparkContext,
 		ssc.awaitTermination()
 	}
 
-	/**
-	  * transform json format's data to entity data
-	  *
-	  * @param jsonObj
-	  * @param elementEntity
-	  * @param dbMap
-	  * @return
-	  */
-	def parseEntity(jsonObj: JSONObject, elementEntity: Entity, dbMap: ElpModelDBMapping): JSONObject = {
-		val elpJsonObj = new JSONObject()
-		try {
-			val jsonBody = jsonObj
-			val props = elementEntity.getProperties
-			val idCols = Option(dbMap.getIdToColumns)
-			// 1: idCols,  2 : idCol 如果标识属性值为空, 则过滤此条记录
 
-			val idStr = {
-				val idBuilder = new StringBuilder(elementEntity.getRootSemanticType)
-				ELPTransUtils.parseCols(idBuilder, idCols, jsonObj)
-			}
-
-			if (Option(idStr).isEmpty) {
-				return null
-			}
-
-			val resId = jsonObj.getString(EntityConstants.VERTEXT_RESID_UPPER)
-			val owner = Option(jsonObj.getString(EntityConstants.VERTEXT_OWNER)).getOrElse("")
-			elpJsonObj.put(EntityConstants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
-			elpJsonObj.put(EntityConstants.VERTEX_ID_FILED, idStr.toString)
-			elpJsonObj.put(EntityConstants.VERTEX_TYPE_FILED, elementEntity.getUuid)
-			elpJsonObj.put(EntityConstants.VERTEXT_OWNER, owner)
-			elpJsonObj.put(EntityConstants.VERTEXT_DSID, resId)
-
-			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementEntity, dbMap))
-			logDebug(s"Entity elpJsonObj=${elpJsonObj}")
-
-		} catch {
-			case ex: RuntimeException => logError("=============> 解析实体数据异常", ex)
-			case ex: Exception => logError("=============> 解析实体数据异常", ex)
-				return null
-		}
-		elpJsonObj
-	}
-
-	/**
-	  * transform json format's data to link data
-	  *
-	  * @param jsonBody
-	  * @param elementLink
-	  * @param dbMap
-	  * @param elp
-	  * @return
-	  */
-	def parseLink(jsonBody: JSONObject, elementLink: Link, dbMap: ElpModelDBMapping, elp: ElpModel): JSONObject = {
-		val elpJsonObj = new JSONObject()
-		try {
-
-			if (Option(elementLink.getSourceEntity).isEmpty
-				|| Option(elementLink.getTargetEntity).isEmpty) {
-				return null
-			}
-
-			val props = elementLink.getProperties
-			val linkData = new CompactLinkData(elementLink.getUuid)
-
-			for (prop <- props.asScala) {
-				val fieldUuid = prop.getUuid
-				val colName = ELPTransUtils.findColName(fieldUuid, dbMap)
-				if ("" != colName) {
-					val value = jsonBody.getString(colName)
-					linkData.addProperty(new PropertyData(prop.getName, value))
-				}
-			}
-
-			val idCols = Option(dbMap.getIdToColumns)
-			val idStr = {
-				val idBuilder = new StringBuilder(elementLink.getUuid)
-				ELPTransUtils.parseCols(idBuilder, idCols, jsonBody)
-			}
-			if (Option(idStr).isEmpty) {
-				return null
-			}
-
-			val resId = jsonBody.getString(LinkContants.EDGE_RESID_UPPER)
-			val owner = Option(jsonBody.getString(LinkContants.EDGE_OWNER)).getOrElse("")
-			elpJsonObj.put(LinkContants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
-
-			// 判断并调整链接方向
-			var dataDirectivity: Directivity = null
-			var needReverseDirection = false
-			// dirtected => true: 有向, false: 无向
-			if (elementLink.isDirected) {
-				if (dbMap.getDirectivity == Directivity.NotDirected) {
-					dataDirectivity = Directivity.SourceToTarget
-				} else if (Directivity.TargetToSource == dbMap.getDirectivity) {
-					needReverseDirection = true
-				} else if (Directivity.SourceToTarget == dbMap.getDirectivity) {
-					needReverseDirection = false
-				} else { // 单一列
-					val directionColumn = Option(dbMap.getDirectionColumn)
-					if (directionColumn.nonEmpty) {
-						dataDirectivity = directionColumn.get.testLinkData(linkData,
-							elementLink.getProperty(directionColumn.get.getColumnName))
-						dataDirectivity = dataDirectivity match {
-							case Directivity.TargetToSource =>
-								needReverseDirection = true
-								Directivity.SourceToTarget
-							case _ =>
-								dataDirectivity
-						}
-					}
-				}
-
-				if (Option(dataDirectivity).isEmpty) {
-					dataDirectivity = if (dbMap.getDirectivity == Directivity.TargetToSource) Directivity.TargetToSource else dbMap.getDirectivity
-				}
-
-				if (!needReverseDirection) { // 不需要调整
-					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
-					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-						parseEntityId(elementLink, "source", jsonBody, dbMap))
-					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
-					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-						parseEntityId(elementLink, "target", jsonBody, dbMap))
-				} else { // 调整方向
-					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
-					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-						parseEntityId(elementLink, "source", jsonBody, dbMap))
-					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
-					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-						parseEntityId(elementLink, "target", jsonBody, dbMap))
-				}
-			} else {
-				dataDirectivity = Directivity.NotDirected
-				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
-				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-					parseEntityId(elementLink, "source", jsonBody, dbMap))
-				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
-				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-					parseEntityId(elementLink, "target", jsonBody, dbMap))
-			}
-
-			// 数据方向
-			val directionType = dataDirectivity match {
-				case Directivity.SourceToTarget =>
-					LinkContants.DIRECTION_UNIDIRECTIONAL
-				case Directivity.TargetToSource =>
-					LinkContants.DIRECTION_UNIDIRECTIONAL
-				case Directivity.NotDirected =>
-					LinkContants.DIRECTION_UNDIRECTED
-				case Directivity.Bidirectional =>
-					LinkContants.DIRECTION_BIDIRECTIONAL
-				case _ =>
-					LinkContants.DIRECTION_UNIDIRECTIONAL
-			}
-			elpJsonObj.put(LinkContants.EDGE_DIRECTION_TYPE_FIELD, directionType)
-			elpJsonObj.put(LinkContants.EDGE_TYPE_FIELD, elementLink.getUuid)
-			elpJsonObj.put(LinkContants.EDGE_ID_FIELD, idStr.toString())
-			elpJsonObj.put(LinkContants.EDGE_DSID, resId)
-			elpJsonObj.put(LinkContants.EDGE_OWNER, owner)
-			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementLink, dbMap))
-			logDebug(s"Link elpJsonObj=${elpJsonObj}")
-		} catch {
-			case ex: RuntimeException => logError("=============> 解析链接数据异常", ex)
-			case ex: Exception => logError("=============> 解析链接数据异常", ex)
-				return null
-		}
-
-		elpJsonObj
-	}
-
-	def getJsonBody(props: java.util.List[Property], jsonBody: JSONObject, element: PropertyBag, dbMap: ElpModelDBMapping): JSONObject = {
-		val elpJsonBody = new JSONObject()
-		import scala.collection.JavaConversions._
-		for (p <- props) {
-			val key = p.getUuid
-			val colName = Option(ELPTransUtils.findColName(key, dbMap))
-			if (colName.nonEmpty) {
-				val pValue = Option(jsonBody.getString(colName.get))
-				if (pValue.nonEmpty) {
-					val dataJsonObj = new JSONObject()
-					dataJsonObj.put("value", pValue.get)
-					if (PropertyTypeConstants.text.equals(element.getPropertyByUUID(key).getType.toString)) {
-						if (element.getPropertyByUUID(key).isAnalyse) {
-							dataJsonObj.put("type", PropertyTypeConstants.text)
-						} else {
-							dataJsonObj.put("type", PropertyTypeConstants.string)
-						}
-					} else {
-						dataJsonObj.put("type", element.getPropertyByUUID(key).getType.toString)
-					}
-
-					elpJsonBody.put(key, dataJsonObj)
-				}
-			}
-		}
-		elpJsonBody
-	}
 
 	def getLabel(label0: String, varNames: java.util.Set[String], varValues: mutable.HashMap[String, String]): String = {
 		var label = label0
@@ -494,23 +297,6 @@ class StreamingExecutor(@transient val sc: SparkContext,
 			}
 		}
 		label
-	}
-
-	def parseEntityId(link: Link, sType: String, jsonBody: JSONObject, dbMap: ElpModelDBMapping): String = {
-		val idStr = if (LinkContants.LINK_SOURCE.equals(sType)) {
-			val id = new StringBuilder(link.getSourceRootSemanticType)
-			val sourceCols = Option(dbMap.getSourceColumns)
-			ELPTransUtils.parseCols(id, sourceCols, jsonBody)
-		} else {
-			val id = new StringBuilder(link.getTargetRootSemanticType)
-			val targetCols = Option(dbMap.getTargetColumns)
-			ELPTransUtils.parseCols(id, targetCols, jsonBody)
-		}
-		if (Option(idStr).nonEmpty) {
-			return idStr.toString()
-		} else {
-			throw new NullPointerException(s"链接两端的实体id存在空值, link uuid: ${link.getUuid}, link name: ${link.getName}, 端点: ${sType}")
-		}
 	}
 
 }

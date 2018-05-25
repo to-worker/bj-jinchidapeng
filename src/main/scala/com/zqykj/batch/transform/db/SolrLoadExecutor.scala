@@ -11,6 +11,8 @@ import org.apache.solr.common.{SolrException, SolrInputDocument}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{Logging, SparkContext}
 
+import scala.collection.mutable.ArrayBuffer
+
 /**
   * @author alfer
   * @date 1/24/18
@@ -123,5 +125,9 @@ class SolrLoadExecutor(@transient sc: SparkContext) extends Logging with Seriali
 	def indexDocs(collection: String, docsRDD: RDD[SolrInputDocument]): Unit = {
 		logInfo(s"=======> zkHost:${zkHost}, zkChroot:${zkChroot}, batch:${batchSize}")
 		SolrClient2Support.indexDocs(zkHost, zkChroot, collection, batchSize, docsRDD)
+	}
+
+	def indexBatchDocs(collection: String, arrDocsRDD: RDD[java.util.ArrayList[SolrInputDocument]]): Unit ={
+		SolrClient2Support.indexBatchDocs(zkHost, zkChroot, collection, batchSize, arrDocsRDD)
 	}
 }

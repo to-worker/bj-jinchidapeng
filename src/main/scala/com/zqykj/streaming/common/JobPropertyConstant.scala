@@ -8,6 +8,10 @@ object JobPropertyConstant {
 
 	val PATH_SEPERATOR_DEFAULT = "/"
 
+	val WILDCARD = "*"
+
+	val FILE_SUFFIX_EXE = ".txt"
+
 	val TRANS_DEFAULT_FS_DEFAULT = "hdfs://172.30.6.34:8020"
 
 	val TRANS_RES_ID_DEFAULT = "tel_net-2018-05-22"
@@ -25,6 +29,10 @@ object JobPropertyConstant {
 	val ZOOKEEPER_CH_ROOT_DEFAULT = "/solrv7testn"
 
 	val SOLR_BATCH_SIZE_DEFAULT = 50000
+
+	val SOLR_ENTITY_COLLECTION_NAME = "standard_model_entity_index"
+
+	val SOLR_LINK_COLLECTION_NAME = "standard_model_relation_index"
 
 	val MONGODB_HOST_DEFAULT = "172.30.6.34"
 

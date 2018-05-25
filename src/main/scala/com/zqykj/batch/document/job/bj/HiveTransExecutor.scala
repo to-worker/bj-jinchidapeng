@@ -2,16 +2,17 @@ package com.zqykj.batch.document.job.bj
 
 import java.util.Date
 
-import com.alibaba.fastjson.JSONObject
+import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import com.zqykj.batch.document.common.TaskElementStatus
-import com.zqykj.batch.transform.db.{HBasePutExecutor, SolrLoadExecutor}
+import com.zqykj.batch.transform.db.SolrLoadExecutor
 import com.zqykj.hyjj.entity.elp._
 import com.zqykj.hyjj.query.{CompactLinkData, PropertyData}
 import com.zqykj.streaming.common.Contants._
-import com.zqykj.streaming.common.{Contants, JobConstants, JobPropertyConstant}
+import com.zqykj.streaming.common.{Contants, JobBusConstant, JobConstants, JobPropertyConstant}
 import com.zqykj.streaming.dao.LoadMongoDao
 import com.zqykj.streaming.util.ELPTransUtils
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+import org.apache.solr.common.SolrInputDocument
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
@@ -31,6 +32,8 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 
 	val elpAndMappingsCache = elpModelAndMappingBroadcast.value
 
+	val elpModelCache = elpModelBroadcast.value
+
 	val basePath = sc.getConf.get("spark.trans.data.path", JobPropertyConstant.TRANS_DATA_PATH_DEFAULT)
 
 	val solrLoadExecutor = new SolrLoadExecutor(sc)
@@ -48,7 +51,14 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		seqidSet
 	}
 
-	def readFile(dirPath: String): RDD[Row] = {
+	def readFiles(dirPath: String): RDD[String] = {
+		val filesPath = dirPath + JobPropertyConstant.PATH_SEPERATOR_DEFAULT + JobPropertyConstant.WILDCARD + JobPropertyConstant.FILE_SUFFIX_EXE
+		logInfo(s"=========> dirPath: ${dirPath}")
+		logInfo(s"=========> filesPath: ${filesPath}")
+		sc.textFile(filesPath)
+	}
+
+	def readAvroFile(dirPath: String): RDD[Row] = {
 		logInfo(s"=======> dirPath: ${dirPath}")
 		val filteredFilePaths = filterFiles(dirPath)
 		if (Option(filteredFilePaths).isEmpty || filteredFilePaths.size <= 0) {
@@ -68,6 +78,10 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		logInfo(s"======> loadPath: ${loadPath}")
 		val sqlContext = new SQLContext(sc)
 		sqlContext.read.format("com.databricks.spark.avro").load(loadPath).rdd
+	}
+
+	def getHDFSFiles(dirPath: String): Unit = {
+
 	}
 
 	def filterFiles(dirPath: String): mutable.HashSet[String] = {
@@ -101,13 +115,6 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			}
 		}
 		avroPaths
-	}
-
-	def readAvroFile(dsId: String): DataFrame = {
-		val avroFilePath = basePath + dsId + Contants.SEPERATOR + JobConstants.wildCardAvroExt
-		val sqlContext = new SQLContext(sc)
-		val avroDF = sqlContext.read.format("com.databricks.spark.avro").load(avroFilePath)
-		avroDF
 	}
 
 	def getPropsValue(row: Row, propertyBag: PropertyBag, dbMap: ElpModelDBMapping): JSONObject = {
@@ -328,7 +335,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 							// (elpId_relation_elpType, elpLinkData)
 							elementJSONObj = parseLink(row, elementJSONObj, mapping, property.get.asInstanceOf[Link], elpModel.get)
 						}
-					}else {
+					} else {
 						logWarning(s"=======>  properties of ${elpMapKey} do not exist.")
 					}
 
@@ -380,6 +387,104 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			.map(m => m._2)
 	}
 
+	def parseJsonArray(rdd: RDD[String]): RDD[JSONArray] = {
+		rdd.mapPartitions(mp => {
+			mp.map(m => {
+				val filterdJsonArr = new JSONArray()
+				val jSONArray = JSON.parseArray(m)
+				val size = jSONArray.size()
+				for (i <- 0 until(size - 1)){
+					val jsonObj = jSONArray.getJSONObject(i)
+					val idType = jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+					if (Option(idType).nonEmpty){
+						if (RelationConstant.RELATION_ID_TYPES.contains(idType)){
+							filterdJsonArr.add(jsonObj)
+						}
+					}
+				}
+				filterdJsonArr
+			}).filter(f => f.size() > 0)
+		})
+	}
+
+	/**
+	  *
+	  * @param entityMappings
+	  * @param dbMappings
+	  * @param jsonArrayRDD
+	  */
+	def transElpData(entityMappings: java.util.HashMap[String, ElpModelDBMapping],
+	                 linkMappings: java.util.HashMap[String, ElpModelDBMapping],
+	                 dbMappings: ArrayBuffer[ElpModelDBMapping], jsonArrayRDD: RDD[JSONArray]):
+	RDD[(java.util.ArrayList[SolrInputDocument], java.util.ArrayList[SolrInputDocument])] = {
+		val result = jsonArrayRDD.mapPartitions(mp => {
+			mp.map(m => {
+				val arrSize = m.size()
+				val entities = new java.util.ArrayList[SolrInputDocument]()
+				val links = new java.util.ArrayList[SolrInputDocument]()
+				// TODO parse entity
+				for (i <- 0 until (arrSize - 1)) {
+					val jsonObj = m.getJSONObject(i)
+					// TODO relation id_type -> elp mapping
+					val mapping = entityMappings.get(jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+					// TODO
+					val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
+					val property = elpAndMappingsCache.get(key)
+					if (property.nonEmpty) {
+						if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
+							val solrInputDoc = ELPTransUtils.parseEntityWithResIdAtRelation(resourceId, jsonObj, property.get.asInstanceOf[Entity], mapping)
+							entities.add(solrInputDoc)
+						} else {
+							logError(s"=========> PropertyBag:${property} is not Entity.")
+						}
+					} else {
+						logError(s"=========> PropertyBag of key ${key} is empty from elpAndMappingsCache.")
+					}
+
+				}
+
+				// TODO parse link
+				if (arrSize >= 2) {
+					for (i <- 0 until (arrSize - 2)) {
+						var k = i + 1
+						for (j <- k until (arrSize - 1)) {
+							val jsonObj_0 = m.getJSONObject(i)
+							val jsonObj_1 = m.getJSONObject(j)
+							val linkMapkey = jsonObj_0.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+								.concat(jsonObj_1.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+							val mapping = linkMappings.get(linkMapkey)
+							val key = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
+							val property = elpAndMappingsCache.get(key)
+							if (PropertyBag.Type.Entity.equals(mapping.getElpTypeDesc)) {
+								val solrInputDoc = ELPTransUtils.parseLinkWithResIdAtRelation(resourceId, jsonObj_0, jsonObj_1, property.get.asInstanceOf[Link], mapping)
+								links.add(solrInputDoc)
+							}
+						}
+					}
+				}
+				(entities, links)
+
+			})
+		})
+		result
+	}
+
+
+	def getSpecialMappings(mappings: ArrayBuffer[ElpModelDBMapping]):
+	(java.util.HashMap[String, ElpModelDBMapping], java.util.HashMap[String, ElpModelDBMapping]) = {
+		val entityMappings = new java.util.HashMap[String, ElpModelDBMapping]()
+		val linkMappings = new java.util.HashMap[String, ElpModelDBMapping]()
+		mappings.foreach(mapping => {
+			val elpTypeDesc = mapping.getElpTypeDesc.toString
+			if ("Entity".equals(elpTypeDesc)) {
+				entityMappings.put(mapping.getElpType, mapping)
+			} else if ("Link".equals(elpTypeDesc)) {
+				linkMappings.put(mapping.getElpType, mapping)
+			}
+		})
+		(entityMappings, linkMappings)
+	}
+
 	def execute(): Unit = {
 
 		// 1 根据tableName和日期读取原始文件
@@ -396,28 +501,62 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			logMap.put("status", TaskElementStatus.running.toString)
 
 			val dirPath = basePath
-
-			val avroRDD = readFile(dirPath)
-			val srcCount = avroRDD.count()
-			logInfo(s"=======> source count: ${srcCount}")
-			logMap.put("srcCount", srcCount.toString)
-			if (!Option(avroRDD).isEmpty) {
-				// 2 获取ELPDBMapping (elp_entity_elpType, ?)
-				val dBMappings = elpDBMappingBroadcast.value.get(dsId)
-				if (!dBMappings.isEmpty) {
-					// 3 按照映射分类转换: ArrayBuffer[RDD[(String, HashMap[Strig, Any]]]
-					val elpDataRDDs = dataTransform2(dBMappings, avroRDD)
-					elpDataRDDs.foreach(rdd => {
-						// 根据唯一id去重
-						// val distinctRDD = removeDuplicatesById(rdd)
-
-						rdd.cache()
-						// 持久化
-						persist(rdd)
+			// 2 获取ELPDBMapping
+			val dBMappings = elpDBMappingBroadcast.value.get(dsId)
+			logInfo(s"========> dBMappings: ${dBMappings}")
+			if (dBMappings.nonEmpty) {
+				if ("relation".equals(tableName)) {
+					logInfo(s"========> processing relation table: ${tableName}")
+					val elMappings = getSpecialMappings(dBMappings.get)
+					logInfo(s"=======> entity mapping has ${elMappings._1.size()} from relation")
+					logInfo(s"=======> link mapping has ${elMappings._2.size()} from relation")
+					val srcRDD = readFiles(dirPath)
+					val srcCount = srcRDD.count()
+					logInfo(s"=======> source count: ${srcCount}")
+					logMap.put("srcCount", srcCount.toString)
+					val jsonArrayRDD = parseJsonArray(srcRDD)
+					logMap.put("countAfterPaseJson", jsonArrayRDD.count().toString)
+					val solrData = transElpData(elMappings._1, elMappings._2, dBMappings.get, jsonArrayRDD)
+					solrData.cache()
+					val entityData = solrData.mapPartitions(solrMp => {
+						solrMp.map(m => m._1)
 					})
+					val linkData = solrData.mapPartitions(solrMp => {
+						solrMp.map(m => m._2)
+					})
+					logInfo(s"index entity docs to ${JobPropertyConstant.SOLR_ENTITY_COLLECTION_NAME} collection.")
+					solrLoadExecutor.indexBatchDocs(JobPropertyConstant.SOLR_ENTITY_COLLECTION_NAME, entityData)
+					logInfo(s"index link docs to ${JobPropertyConstant.SOLR_LINK_COLLECTION_NAME} collection.")
+					solrLoadExecutor.indexBatchDocs(JobPropertyConstant.SOLR_LINK_COLLECTION_NAME, linkData)
+					logMap.put("status", TaskElementStatus.successful.toString)
+				} else {
+					logInfo(s"processing wildcard table: ${tableName}")
+					val avroRDD = readAvroFile(dirPath)
+					val srcCount = avroRDD.count()
+					logInfo(s"=======> source count: ${srcCount}")
+					logMap.put("srcCount", srcCount.toString)
+					if (!Option(avroRDD).isEmpty) {
+
+						if (!dBMappings.isEmpty) {
+							// 3 按照映射分类转换: ArrayBuffer[RDD[(String, HashMap[Strig, Any]]]
+							val elpDataRDDs = dataTransform2(dBMappings, avroRDD)
+							elpDataRDDs.foreach(rdd => {
+								// 根据唯一id去重
+								// val distinctRDD = removeDuplicatesById(rdd)
+
+								rdd.cache()
+								// 持久化
+								persist(rdd)
+							})
+						}
+					}
 				}
+				logMap.put("status", TaskElementStatus.successful.toString)
+			} else {
+				logError(s"===========> dsId: ${dsId}, dBMappings is empty.")
+				logMap.put("status", TaskElementStatus.failure.toString)
+				logMap.put("error info", "dBMappings is empty.")
 			}
-			logMap.put("status", TaskElementStatus.successful.toString)
 		} catch {
 			case ex: Exception => {
 				logMap.put("status", TaskElementStatus.failure.toString)

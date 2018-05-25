@@ -5,11 +5,14 @@ import java.util.{Date, Set}
 import java.util.regex.Pattern
 
 import com.alibaba.fastjson.{JSON, JSONObject}
-import com.zqykj.hyjj.entity.elp.{ElpModelDBMapping, PropertyBag, PropertyType}
-import com.zqykj.streaming.common.{Contants, JobConstants}
+import com.zqykj.hyjj.entity.elp._
+import com.zqykj.hyjj.query.{CompactLinkData, PropertyData}
+import com.zqykj.streaming.common.{Contants, JobBusConstant, JobConstants}
 import com.zqykj.streaming.common.Contants._
 import com.zqykj.streaming.metadata.{ELpModifyMap, ELpTypeModifyMap}
 import com.zqykj.streaming.service.LoadMongoService
+import org.apache.commons.lang3.StringUtils
+import org.apache.solr.common.SolrInputDocument
 import org.apache.spark.{Logging, SparkConf}
 
 import scala.collection.mutable
@@ -231,6 +234,457 @@ object ELPTransUtils extends Logging with Serializable {
 			}
 		}
 		filteredELP
+	}
+
+	/**
+	  * transform json format's data to entity data
+	  *
+	  * @param jsonObj
+	  * @param elementEntity
+	  * @param dbMap
+	  * @return
+	  */
+	def parseEntity(jsonObj: JSONObject, elementEntity: Entity, dbMap: ElpModelDBMapping): JSONObject = {
+		val elpJsonObj = new JSONObject()
+		try {
+			val jsonBody = jsonObj
+			val props = elementEntity.getProperties
+			val idCols = Option(dbMap.getIdToColumns)
+			// 1: idCols,  2 : idCol 如果标识属性值为空, 则过滤此条记录
+
+			val idStr = {
+				val idBuilder = new StringBuilder(elementEntity.getRootSemanticType)
+				ELPTransUtils.parseCols(idBuilder, idCols, jsonObj)
+			}
+
+			if (Option(idStr).isEmpty) {
+				return null
+			}
+
+			val resId = jsonObj.getString(EntityConstants.VERTEXT_RESID_UPPER)
+			val owner = Option(jsonObj.getString(EntityConstants.VERTEXT_OWNER)).getOrElse("")
+			elpJsonObj.put(EntityConstants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
+			elpJsonObj.put(EntityConstants.VERTEX_ID_FILED, idStr.toString)
+			elpJsonObj.put(EntityConstants.VERTEX_TYPE_FILED, elementEntity.getUuid)
+			elpJsonObj.put(EntityConstants.VERTEXT_OWNER, owner)
+			elpJsonObj.put(EntityConstants.VERTEXT_DSID, resId)
+
+			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementEntity, dbMap))
+			logDebug(s"Entity elpJsonObj=${elpJsonObj}")
+
+		} catch {
+			case ex: RuntimeException => logError("=============> 解析实体数据异常", ex)
+			case ex: Exception => logError("=============> 解析实体数据异常", ex)
+				return null
+		}
+		elpJsonObj
+	}
+
+	def parseEntityWithResId(resourceId: String, jsonObj: JSONObject, elementEntity: Entity, dbMap: ElpModelDBMapping): JSONObject = {
+		val elpJsonObj = new JSONObject()
+		try {
+			val jsonBody = jsonObj
+			val props = elementEntity.getProperties
+			val idCols = Option(dbMap.getIdToColumns)
+			// 1: idCols,  2 : idCol 如果标识属性值为空, 则过滤此条记录
+
+			val idStr = {
+				val idBuilder = new StringBuilder(elementEntity.getRootSemanticType)
+				ELPTransUtils.parseCols(idBuilder, idCols, jsonObj)
+			}
+
+			if (Option(idStr).isEmpty) {
+				return null
+			}
+
+			val resId = resourceId
+			elpJsonObj.put(EntityConstants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
+			elpJsonObj.put(EntityConstants.VERTEX_ID_FILED, idStr.toString)
+			elpJsonObj.put(EntityConstants.VERTEX_TYPE_FILED, elementEntity.getUuid)
+			elpJsonObj.put(EntityConstants.VERTEXT_DSID, resId)
+
+			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementEntity, dbMap))
+			logDebug(s"Entity elpJsonObj=${elpJsonObj}")
+
+		} catch {
+			case ex: RuntimeException => logError("=============> 解析实体数据异常", ex)
+			case ex: Exception => logError("=============> 解析实体数据异常", ex)
+				return null
+		}
+		elpJsonObj
+	}
+
+
+	def parseEntityWithResIdAtRelation(resourceId: String, jsonBody: JSONObject, elementEntity: Entity, dbMap: ElpModelDBMapping): SolrInputDocument = {
+		val solrDocument = new SolrInputDocument()
+		try {
+			val idStr = {
+				val idBuilder = new StringBuilder(elementEntity.getRootSemanticType)
+				idBuilder.append(Contants.ID_SPACE_MARK).append(jsonBody.getString(JobBusConstant.RELATION_ID_NAME))
+			}
+
+			if (Option(idStr).isEmpty) {
+				return null
+			}
+
+			val entityId = idStr.toString()
+			val idLabel = resourceId + ID_ELP_TYPE_SEPERATOR + entityId
+			solrDocument.setField(EntityConstants.HBASE_TABLE_ID, idLabel)
+			solrDocument.setField(EntityConstants.VERTEX_ID_FILED, entityId)
+			solrDocument.setField(EntityConstants.VERTEX_TYPE_FILED, elementEntity.getUuid)
+			solrDocument.setField(EntityConstants.VERTEXT_RESID, resourceId)
+			solrDocument.setField(JobBusConstant.RELATION_ID_TYPE_NAME, jsonBody.getString(JobBusConstant.RELATION_ID_TYPE_NAME))
+			solrDocument.addField("_indexed_at_tdt", new Date())
+		} catch {
+			case ex: RuntimeException => logError("=============> 解析实体数据异常", ex)
+			case ex: Exception => logError("=============> 解析实体数据异常", ex)
+				return null
+		}
+		solrDocument
+	}
+
+
+	/**
+	  * transform json format's data to link data
+	  *
+	  * @param jsonBody
+	  * @param elementLink
+	  * @param dbMap
+	  * @param elp
+	  * @return
+	  */
+	def parseLink(jsonBody: JSONObject, elementLink: Link, dbMap: ElpModelDBMapping, elp: ElpModel): JSONObject = {
+		val elpJsonObj = new JSONObject()
+		try {
+
+			if (Option(elementLink.getSourceEntity).isEmpty
+				|| Option(elementLink.getTargetEntity).isEmpty) {
+				return null
+			}
+
+			val props = elementLink.getProperties
+			val linkData = new CompactLinkData(elementLink.getUuid)
+
+			for (prop <- props.asScala) {
+				val fieldUuid = prop.getUuid
+				val colName = ELPTransUtils.findColName(fieldUuid, dbMap)
+				if ("" != colName) {
+					val value = jsonBody.getString(colName)
+					linkData.addProperty(new PropertyData(prop.getName, value))
+				}
+			}
+
+			val idCols = Option(dbMap.getIdToColumns)
+			val idStr = {
+				val idBuilder = new StringBuilder(elementLink.getUuid)
+				ELPTransUtils.parseCols(idBuilder, idCols, jsonBody)
+			}
+			if (Option(idStr).isEmpty) {
+				return null
+			}
+
+			val resId = jsonBody.getString(LinkContants.EDGE_RESID_UPPER)
+			val owner = Option(jsonBody.getString(LinkContants.EDGE_OWNER)).getOrElse("")
+			elpJsonObj.put(LinkContants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
+
+			// 判断并调整链接方向
+			var dataDirectivity: Directivity = null
+			var needReverseDirection = false
+			// dirtected => true: 有向, false: 无向
+			if (elementLink.isDirected) {
+				if (dbMap.getDirectivity == Directivity.NotDirected) {
+					dataDirectivity = Directivity.SourceToTarget
+				} else if (Directivity.TargetToSource == dbMap.getDirectivity) {
+					needReverseDirection = true
+				} else if (Directivity.SourceToTarget == dbMap.getDirectivity) {
+					needReverseDirection = false
+				} else { // 单一列
+					val directionColumn = Option(dbMap.getDirectionColumn)
+					if (directionColumn.nonEmpty) {
+						dataDirectivity = directionColumn.get.testLinkData(linkData,
+							elementLink.getProperty(directionColumn.get.getColumnName))
+						dataDirectivity = dataDirectivity match {
+							case Directivity.TargetToSource =>
+								needReverseDirection = true
+								Directivity.SourceToTarget
+							case _ =>
+								dataDirectivity
+						}
+					}
+				}
+
+				if (Option(dataDirectivity).isEmpty) {
+					dataDirectivity = if (dbMap.getDirectivity == Directivity.TargetToSource) Directivity.TargetToSource else dbMap.getDirectivity
+				}
+
+				if (!needReverseDirection) { // 不需要调整
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "source", jsonBody, dbMap))
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "target", jsonBody, dbMap))
+				} else { // 调整方向
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "source", jsonBody, dbMap))
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "target", jsonBody, dbMap))
+				}
+			} else {
+				dataDirectivity = Directivity.NotDirected
+				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+					parseEntityId(elementLink, "source", jsonBody, dbMap))
+				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+					parseEntityId(elementLink, "target", jsonBody, dbMap))
+			}
+
+			// 数据方向
+			val directionType = dataDirectivity match {
+				case Directivity.SourceToTarget =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+				case Directivity.TargetToSource =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+				case Directivity.NotDirected =>
+					LinkContants.DIRECTION_UNDIRECTED
+				case Directivity.Bidirectional =>
+					LinkContants.DIRECTION_BIDIRECTIONAL
+				case _ =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+			}
+			elpJsonObj.put(LinkContants.EDGE_DIRECTION_TYPE_FIELD, directionType)
+			elpJsonObj.put(LinkContants.EDGE_TYPE_FIELD, elementLink.getUuid)
+			elpJsonObj.put(LinkContants.EDGE_ID_FIELD, idStr.toString())
+			elpJsonObj.put(LinkContants.EDGE_DSID, resId)
+			elpJsonObj.put(LinkContants.EDGE_OWNER, owner)
+			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementLink, dbMap))
+			logDebug(s"Link elpJsonObj=${elpJsonObj}")
+		} catch {
+			case ex: RuntimeException => logError("=============> 解析链接数据异常", ex)
+			case ex: Exception => logError("=============> 解析链接数据异常", ex)
+				return null
+		}
+		elpJsonObj
+	}
+
+	def parseLinkWithResIdAtRelation(resourceId: String, sourceJsonObj: JSONObject, targetJsonObj: JSONObject, elementLink: Link,
+	                                 dbMap: ElpModelDBMapping): SolrInputDocument = {
+		val id_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_NAME)
+		val id_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_NAME)
+		val id_type_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+		val id_type_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+
+		if (StringUtils.isNotBlank(id_0) || StringUtils.isNotBlank(id_1)) {
+			return null
+		}
+
+		val compareResult = id_0.compare(id_1)
+		var id_label = ""
+		var from_entity_id = ""
+		var from_entity_type = ""
+		var to_entity_id = ""
+		var to_entity_type = ""
+
+		val solrDocument = new SolrInputDocument()
+		if (compareResult >= 0) {
+			id_label = resourceId.concat(ID_ELP_TYPE_SEPERATOR)
+				.concat(id_0).concat(Contants.ID_SPACE_MARK)
+				.concat(id_1)
+			from_entity_type = elementLink.getSourceEntity
+			to_entity_type = elementLink.getTargetEntity
+			from_entity_id = elementLink.getSourceEntity.concat(Contants.ID_SPACE_MARK).concat(id_0)
+			to_entity_id = elementLink.getTargetEntity.concat(Contants.ID_SPACE_MARK).concat(id_1)
+			solrDocument.setField(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, from_entity_type)
+			solrDocument.setField(LinkContants.EDGE_FROM_VERTEX_ID_FIELD, from_entity_id)
+			solrDocument.setField(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, to_entity_type)
+			solrDocument.setField(LinkContants.EDGE_TO_VERTEX_ID_FIELD, to_entity_id)
+			solrDocument.setField(LinkContants.EDGE_DIRECTION_TYPE_FIELD, LinkContants.DIRECTION_UNIDIRECTIONAL)
+		} else {
+			id_label = resourceId.concat(ID_ELP_TYPE_SEPERATOR)
+				.concat(id_1).concat(Contants.ID_SPACE_MARK)
+				.concat(id_0)
+			from_entity_type = elementLink.getTargetEntity
+			to_entity_type = elementLink.getSourceEntity
+			from_entity_id = elementLink.getTargetEntity.concat(Contants.ID_SPACE_MARK).concat(id_1)
+			to_entity_id = elementLink.getSourceEntity.concat(Contants.ID_SPACE_MARK).concat(id_0)
+			solrDocument.setField(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, from_entity_type)
+			solrDocument.setField(LinkContants.EDGE_FROM_VERTEX_ID_FIELD, from_entity_id)
+			solrDocument.setField(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, to_entity_type)
+			solrDocument.setField(LinkContants.EDGE_TO_VERTEX_ID_FIELD, to_entity_id)
+			solrDocument.setField(LinkContants.EDGE_DIRECTION_TYPE_FIELD, LinkContants.DIRECTION_UNIDIRECTIONAL)
+		}
+
+		solrDocument.setField(LinkContants.HBASE_TABLE_ROWKEY, id_label)
+
+		solrDocument.setField(LinkContants.EDGE_TYPE_FIELD, elementLink.getUuid)
+		solrDocument.setField(LinkContants.EDGE_ID_FIELD, id_label)
+		solrDocument.setField(LinkContants.EDGE_RESID, resourceId)
+		solrDocument.addField("_indexed_at_tdt", new Date())
+		solrDocument
+	}
+
+	def parseLinkWithResid(resourceId: String, jsonBody: JSONObject, elementLink: Link, dbMap: ElpModelDBMapping, elp: ElpModel): JSONObject = {
+		val elpJsonObj = new JSONObject()
+		try {
+
+			if (Option(elementLink.getSourceEntity).isEmpty
+				|| Option(elementLink.getTargetEntity).isEmpty) {
+				return null
+			}
+
+			val props = elementLink.getProperties
+			val linkData = new CompactLinkData(elementLink.getUuid)
+
+			for (prop <- props.asScala) {
+				val fieldUuid = prop.getUuid
+				val colName = ELPTransUtils.findColName(fieldUuid, dbMap)
+				if ("" != colName) {
+					val value = jsonBody.getString(colName)
+					linkData.addProperty(new PropertyData(prop.getName, value))
+				}
+			}
+
+			val idCols = Option(dbMap.getIdToColumns)
+			val idStr = {
+				val idBuilder = new StringBuilder(elementLink.getUuid)
+				ELPTransUtils.parseCols(idBuilder, idCols, jsonBody)
+			}
+			if (Option(idStr).isEmpty) {
+				return null
+			}
+
+			val resId = resourceId
+			elpJsonObj.put(LinkContants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
+
+			// 判断并调整链接方向
+			var dataDirectivity: Directivity = null
+			var needReverseDirection = false
+			// dirtected => true: 有向, false: 无向
+			if (elementLink.isDirected) {
+				if (dbMap.getDirectivity == Directivity.NotDirected) {
+					dataDirectivity = Directivity.SourceToTarget
+				} else if (Directivity.TargetToSource == dbMap.getDirectivity) {
+					needReverseDirection = true
+				} else if (Directivity.SourceToTarget == dbMap.getDirectivity) {
+					needReverseDirection = false
+				} else { // 单一列
+					val directionColumn = Option(dbMap.getDirectionColumn)
+					if (directionColumn.nonEmpty) {
+						dataDirectivity = directionColumn.get.testLinkData(linkData,
+							elementLink.getProperty(directionColumn.get.getColumnName))
+						dataDirectivity = dataDirectivity match {
+							case Directivity.TargetToSource =>
+								needReverseDirection = true
+								Directivity.SourceToTarget
+							case _ =>
+								dataDirectivity
+						}
+					}
+				}
+
+				if (Option(dataDirectivity).isEmpty) {
+					dataDirectivity = if (dbMap.getDirectivity == Directivity.TargetToSource) Directivity.TargetToSource else dbMap.getDirectivity
+				}
+
+				if (!needReverseDirection) { // 不需要调整
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "source", jsonBody, dbMap))
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "target", jsonBody, dbMap))
+				} else { // 调整方向
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+					elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "source", jsonBody, dbMap))
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+					elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+						parseEntityId(elementLink, "target", jsonBody, dbMap))
+				}
+			} else {
+				dataDirectivity = Directivity.NotDirected
+				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+				elpJsonObj.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+					parseEntityId(elementLink, "source", jsonBody, dbMap))
+				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
+				elpJsonObj.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+					parseEntityId(elementLink, "target", jsonBody, dbMap))
+			}
+
+			// 数据方向
+			val directionType = dataDirectivity match {
+				case Directivity.SourceToTarget =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+				case Directivity.TargetToSource =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+				case Directivity.NotDirected =>
+					LinkContants.DIRECTION_UNDIRECTED
+				case Directivity.Bidirectional =>
+					LinkContants.DIRECTION_BIDIRECTIONAL
+				case _ =>
+					LinkContants.DIRECTION_UNIDIRECTIONAL
+			}
+			elpJsonObj.put(LinkContants.EDGE_DIRECTION_TYPE_FIELD, directionType)
+			elpJsonObj.put(LinkContants.EDGE_TYPE_FIELD, elementLink.getUuid)
+			elpJsonObj.put(LinkContants.EDGE_ID_FIELD, idStr.toString())
+			elpJsonObj.put(LinkContants.EDGE_DSID, resId)
+			elpJsonObj.put("body", getJsonBody(props, jsonBody, elementLink, dbMap))
+			logDebug(s"Link elpJsonObj=${elpJsonObj}")
+		} catch {
+			case ex: RuntimeException => logError("=============> 解析链接数据异常", ex)
+			case ex: Exception => logError("=============> 解析链接数据异常", ex)
+				return null
+		}
+		elpJsonObj
+	}
+
+
+	def parseEntityId(link: Link, sType: String, jsonBody: JSONObject, dbMap: ElpModelDBMapping): String = {
+		val idStr = if (LinkContants.LINK_SOURCE.equals(sType)) {
+			val id = new StringBuilder(link.getSourceRootSemanticType)
+			val sourceCols = Option(dbMap.getSourceColumns)
+			ELPTransUtils.parseCols(id, sourceCols, jsonBody)
+		} else {
+			val id = new StringBuilder(link.getTargetRootSemanticType)
+			val targetCols = Option(dbMap.getTargetColumns)
+			ELPTransUtils.parseCols(id, targetCols, jsonBody)
+		}
+		if (Option(idStr).nonEmpty) {
+			return idStr.toString()
+		} else {
+			throw new NullPointerException(s"链接两端的实体id存在空值, link uuid: ${link.getUuid}, link name: ${link.getName}, 端点: ${sType}")
+		}
+	}
+
+	def getJsonBody(props: java.util.List[Property], jsonBody: JSONObject, element: PropertyBag, dbMap: ElpModelDBMapping): JSONObject = {
+		val elpJsonBody = new JSONObject()
+		import scala.collection.JavaConversions._
+		for (p <- props) {
+			val key = p.getUuid
+			val colName = Option(ELPTransUtils.findColName(key, dbMap))
+			if (colName.nonEmpty) {
+				val pValue = Option(jsonBody.getString(colName.get))
+				if (pValue.nonEmpty) {
+					val dataJsonObj = new JSONObject()
+					dataJsonObj.put("value", pValue.get)
+					if (PropertyTypeConstants.text.equals(element.getPropertyByUUID(key).getType.toString)) {
+						if (element.getPropertyByUUID(key).isAnalyse) {
+							dataJsonObj.put("type", PropertyTypeConstants.text)
+						} else {
+							dataJsonObj.put("type", PropertyTypeConstants.string)
+						}
+					} else {
+						dataJsonObj.put("type", element.getPropertyByUUID(key).getType.toString)
+					}
+
+					elpJsonBody.put(key, dataJsonObj)
+				}
+			}
+		}
+		elpJsonBody
 	}
 
 
