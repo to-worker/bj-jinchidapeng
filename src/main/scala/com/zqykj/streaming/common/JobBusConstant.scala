@@ -9,4 +9,8 @@ object JobBusConstant {
 
 	val RELATION_ID_NAME = "id"
 
+	val RELATION_SEPCIAL_MAC_TYPE = "mac"
+
+	val MAC_SPLIT_CHARACHTER = ":"
+
 }

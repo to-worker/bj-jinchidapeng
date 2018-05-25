@@ -396,8 +396,13 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 				for (i <- 0 until(size - 1)){
 					val jsonObj = jSONArray.getJSONObject(i)
 					val idType = jsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
-					if (Option(idType).nonEmpty){
+					val id = jsonObj.getString(JobBusConstant.RELATION_ID_NAME)
+					if (Option(idType).nonEmpty && Option(id).nonEmpty){
 						if (RelationConstant.RELATION_ID_TYPES.contains(idType)){
+							// 如果是mac地址，则去掉冒号
+							if (JobBusConstant.RELATION_SEPCIAL_MAC_TYPE.equals(idType)){
+								jsonObj.put(JobBusConstant.RELATION_ID_NAME, id.replaceAll(JobBusConstant.MAC_SPLIT_CHARACHTER, ""))
+							}
 							filterdJsonArr.add(jsonObj)
 						}
 					}
