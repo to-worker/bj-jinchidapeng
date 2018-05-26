@@ -122,9 +122,9 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		avroPaths
 	}
 
-	def getPropsValue(row: Row, propertyBag: PropertyBag, dbMap: ElpModelDBMapping): JSONObject = {
+	def getPropsValue(row: Row, element: PropertyBag, dbMap: ElpModelDBMapping): JSONObject = {
 		val bodyObj = new JSONObject()
-		val props: java.util.List[Property] = propertyBag.getProperties
+		val props: java.util.List[Property] = element.getProperties
 		for (p <- props.asScala) {
 			val key = p.getUuid
 			val colName = Option(ELPTransUtils.findColName(key, dbMap))
@@ -133,7 +133,15 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 				if (pValue.nonEmpty) {
 					val dataJsonObj = new JSONObject()
 					dataJsonObj.put("value", pValue.get)
-					dataJsonObj.put("type", propertyBag.getPropertyByUUID(key).getType.toString)
+					if (PropertyTypeConstants.text.equals(element.getPropertyByUUID(key).getType.toString)) {
+						if (element.getPropertyByUUID(key).isAnalyse) {
+							dataJsonObj.put("type", PropertyTypeConstants.text)
+						} else {
+							dataJsonObj.put("type", PropertyTypeConstants.string)
+						}
+					} else {
+						dataJsonObj.put("type", element.getPropertyByUUID(key).getType.toString)
+					}
 					bodyObj.put(key, dataJsonObj)
 				}
 			}
@@ -322,6 +330,7 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			}
 			logInfo(s"========> elpType:${mapping.getElpType}, elpTypeDesc:${mapping.getElpTypeDesc}, elpModel: ${elpModel.get.getUuid}")
 			logInfo(s"=========> key:${key}")
+
 			val elpMapKey = mapping.getElp + ELP_MAPPING_SEPARATOR + mapping.getElpType + ELP_MAPPING_SEPARATOR + mapping.getElpTypeDesc.toString
 			val property = elpAndMappingsCache.get(elpMapKey)
 
@@ -346,6 +355,8 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 
 					(key, elementJSONObj)
 				}
+			}).filter(mp => {
+				Option(mp._2).nonEmpty
 			})
 			// data to heavy
 			mappingData.mapPartitions(mp => mp.map {
