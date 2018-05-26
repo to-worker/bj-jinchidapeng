@@ -15,4 +15,6 @@ object JobBusConstant {
 
 	val RELATION_LINK_UUID_SEPATATOR = "_"
 
+	val IP_UUID_NAME_CONTAINS = "_ip_long_"
+
 }

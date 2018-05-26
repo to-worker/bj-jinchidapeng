@@ -5,12 +5,12 @@ import java.util.Date
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import com.zqykj.batch.document.common.TaskElementStatus
 import com.zqykj.batch.transform.db.SolrLoadExecutor
-import com.zqykj.hyjj.entity.elp.{ElpModel, ElpModelDBMapping, Entity, Link, PropertyBag, Directivity, Property}
+import com.zqykj.hyjj.entity.elp.{Directivity, ElpModel, ElpModelDBMapping, Entity, Link, Property, PropertyBag}
 import com.zqykj.hyjj.query.{CompactLinkData, PropertyData}
 import com.zqykj.streaming.common.Contants._
 import com.zqykj.streaming.common.{Contants, JobBusConstant, JobConstants, JobPropertyConstant}
 import com.zqykj.streaming.dao.LoadMongoDao
-import com.zqykj.streaming.util.ELPTransUtils
+import com.zqykj.streaming.util.{ELPTransUtils, IpUtils}
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.solr.common.SolrInputDocument
 import org.apache.spark.broadcast.Broadcast
@@ -129,10 +129,15 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			val key = p.getUuid
 			val colName = Option(ELPTransUtils.findColName(key, dbMap))
 			if (colName.nonEmpty && !"".equals(colName.get)) {
-				val pValue = Option(row.get(row.fieldIndex(colName.get)))
-				if (pValue.nonEmpty) {
+				val pValueOpt = Option(row.get(row.fieldIndex(colName.get)))
+				if (pValueOpt.nonEmpty) {
 					val dataJsonObj = new JSONObject()
-					dataJsonObj.put("value", pValue.get)
+					var pValue = pValueOpt.get
+					// 对Long 类型的ip的进行处理
+					if (JobBusConstant.IP_UUID_NAME_CONTAINS.contains(key)){
+						pValue = IpUtils.longToIP(java.lang.Long.valueOf(pValue.toString))
+					}
+					dataJsonObj.put("value", pValue)
 					dataJsonObj.put("type", propertyBag.getPropertyByUUID(key).getType.toString)
 					bodyObj.put(key, dataJsonObj)
 				}
