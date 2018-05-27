@@ -296,21 +296,19 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 
 	def parseEntityId(row: Row, link: Link, sType: String, foreign: Entity, dbMap: ElpModelDBMapping): String = {
 		val idStr = if (LinkContants.LINK_SOURCE.equals(sType)) {
-			new StringBuilder(link.getSourceRootSemanticType)
+			val id = new StringBuilder(link.getSourceRootSemanticType)
+			val sourceCols = Option(dbMap.getSourceColumns)
+			ELPTransUtils.parseCols(id, sourceCols, row)
 		} else {
-			new StringBuilder(link.getTargetRootSemanticType)
+			val id = new StringBuilder(link.getTargetRootSemanticType)
+			val targetCols = Option(dbMap.getTargetColumns)
+			ELPTransUtils.parseCols(id, targetCols, row)
 		}
-		val sourceCols = Option(dbMap.getSourceColumns)
-		if (sourceCols.nonEmpty) {
-			for (sCol <- sourceCols.get.asScala) {
-				val colValue = Option(row.get(row.fieldIndex(sCol)))
-				if (colValue.nonEmpty) {
-					if (idStr.length > 0) idStr.append(Contants.ID_SPACE_MARK)
-					idStr.append(colValue.get)
-				}
-			}
+		if (Option(idStr).nonEmpty) {
+			return idStr.toString()
+		} else {
+			throw new NullPointerException(s"链接两端的实体id存在空值, link uuid: ${link.getUuid}, link name: ${link.getName}, 端点: ${sType}")
 		}
-		idStr.toString()
 	}
 
 	def dataTransform2(dBMappings: Option[ArrayBuffer[ElpModelDBMapping]], rowRDD: RDD[Row]): ArrayBuffer[RDD[(String, JSONObject)]] = {

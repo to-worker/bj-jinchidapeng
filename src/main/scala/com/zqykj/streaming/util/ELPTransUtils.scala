@@ -13,6 +13,7 @@ import com.zqykj.streaming.metadata.{ELpModifyMap, ELpTypeModifyMap}
 import com.zqykj.streaming.service.LoadMongoService
 import org.apache.commons.lang3.StringUtils
 import org.apache.solr.common.SolrInputDocument
+import org.apache.spark.sql.Row
 import org.apache.spark.{Logging, SparkConf}
 
 import scala.collection.mutable
@@ -75,6 +76,24 @@ object ELPTransUtils extends Logging with Serializable {
 			return null
 		}
 	}
+
+	def parseCols(id: StringBuilder, cols: Option[java.util.List[String]], row: Row): StringBuilder = {
+		if (cols.nonEmpty && cols.get.size() > 0) {
+			for (sCol <- cols.get.asScala) {
+				val colValue = Option(row.get(row.fieldIndex(sCol)))
+				if (colValue.nonEmpty && colValue.get.toString.trim.size > 0) {
+					if (id.length > 0) id.append(Contants.ID_SPACE_MARK)
+					id.append(colValue.get)
+				} else {
+					return null
+				}
+			}
+			id
+		} else {
+			return null
+		}
+	}
+
 
 	def getCollectionNameByTableName(elpIdAndType: String, elpType: String): String = {
 		val collectionName = if (Contants.ENTITY.equals(elpType)) {
