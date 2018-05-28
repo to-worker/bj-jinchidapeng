@@ -1,10 +1,6 @@
 
-branch from 2.0.2
-
-main function for monitor of streaming and kafka.
-
-main feature:
-1、multiThread write to solr and hbase without thread control.
-2、add date format according to systemParamter collection of mongodb.
-3、filter resid in doc task.
-4、fix bug in April to publish the mvp version.
+需要修复的streaming/batch问题：
+1、streaming/batch parseEntityId抛出异常问题;
+2、parseLink两端实体id存在空值即返回null;
+3、batch getPropsValue根据分析属性决定是否分词;
+4、batch persist后unpersist
