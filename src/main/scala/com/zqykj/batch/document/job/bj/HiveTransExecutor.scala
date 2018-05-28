@@ -217,6 +217,9 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		val resId = resourceId
 		element.put(LinkContants.HBASE_TABLE_ROWKEY, resId + ID_ELP_TYPE_SEPERATOR + idStr.toString())
 
+		var sourceEntityId = ""
+		var targetEntityId = ""
+
 		// 判断并调整链接方向
 		var dataDirectivity: Directivity = null
 		var needReverseDirection = false
@@ -248,28 +251,61 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 			}
 
 			if (!needReverseDirection) { // 不需要调整
-				element.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+				targetEntityId = parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap)
+				sourceEntityId = parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getSourceRootSemanticType), dbMap)
+				if (Option(targetEntityId).isEmpty) {
+					return null
+				}
+				if (Option(sourceEntityId).isEmpty) {
+					return null
+				}
+				element.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+					targetEntityId)
 				element.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-					parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getSourceRootSemanticType), dbMap))
+					sourceEntityId)
+
+				element.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+
 				element.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
-				element.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-					parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap))
+
 			} else { // 调整方向
-				element.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetRootSemanticType)
+
+				targetEntityId = parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getSourceRootSemanticType), dbMap)
+				if (Option(targetEntityId).isEmpty) {
+					return null
+				}
+				sourceEntityId = parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap)
+				if (Option(sourceEntityId).isEmpty) {
+					return null
+				}
 				element.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-					parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap))
-				element.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+					sourceEntityId)
 				element.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-					parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getSourceRootSemanticType), dbMap))
+					targetEntityId)
+
+				element.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetRootSemanticType)
+
+				element.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
+
 			}
 		} else {
+
+			targetEntityId = parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap)
+			if (Option(targetEntityId).isEmpty) {
+				return null
+			}
+			sourceEntityId = parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap)
+			if (Option(sourceEntityId).isEmpty) {
+				return null
+			}
+			element.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
+				sourceEntityId)
+			element.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
+				targetEntityId)
+
 			dataDirectivity = Directivity.NotDirected
 			element.put(LinkContants.EDGE_FROM_VERTEX_TYPE_FIELD, elementLink.getSourceEntity)
-			element.put(LinkContants.EDGE_FROM_VERTEX_ID_FIELD,
-				parseEntityId(row, elementLink, "source", elp.getEntityByUuid(elementLink.getSourceRootSemanticType), dbMap))
 			element.put(LinkContants.EDGE_TO_VERTEX_TYPE_FIELD, elementLink.getTargetEntity)
-			element.put(LinkContants.EDGE_TO_VERTEX_ID_FIELD,
-				parseEntityId(row, elementLink, "target", elp.getEntityByUuid(elementLink.getTargetRootSemanticType), dbMap))
 		}
 
 		// 数据方向
@@ -307,7 +343,8 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 		if (Option(idStr).nonEmpty) {
 			return idStr.toString()
 		} else {
-			throw new NullPointerException(s"链接两端的实体id存在空值, link uuid: ${link.getUuid}, link name: ${link.getName}, 端点: ${sType}")
+			logError(s"${sType}端实体id有空值,link uuid: ${link.getUuid}")
+			return null
 		}
 	}
 
@@ -357,13 +394,13 @@ class HiveTransExecutor(@transient val sc: SparkContext,
 				Option(mp._2).nonEmpty
 			})
 			// data to heavy
-			mappingData.mapPartitions(mp => mp.map {
-				md => {
-					(md._1.concat(md._2.getString(EntityConstants.HBASE_TABLE_ROWKEY)), md._2)
-				}
-			})
-			//				.reduceByKey((a, b) => b)
-			//				.filter(f => !f._2.isEmpty)
+			mappingData
+				.filter(f => f._2.containsKey(EntityConstants.HBASE_TABLE_ROWKEY))
+				.mapPartitions(mp => mp.map {
+					md => {
+						(md._1.concat(md._2.getString(EntityConstants.HBASE_TABLE_ROWKEY)), md._2)
+					}
+				}).reduceByKey((a, b) => b)
 		})
 		elpDataWithKey
 	}

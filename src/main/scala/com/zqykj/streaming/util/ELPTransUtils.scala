@@ -493,8 +493,6 @@ object ELPTransUtils extends Logging with Serializable {
 	                                 dbMap: ElpModelDBMapping): SolrInputDocument = {
 		val id_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_NAME)
 		val id_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_NAME)
-		val id_type_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
-		val id_type_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
 
 		if (StringUtils.isBlank(id_0) || StringUtils.isBlank(id_1)) {
 			return null
@@ -535,6 +533,20 @@ object ELPTransUtils extends Logging with Serializable {
 			solrDocument.setField(LinkContants.EDGE_TO_VERTEX_ID_FIELD, to_entity_id)
 			solrDocument.setField(LinkContants.EDGE_DIRECTION_TYPE_FIELD, LinkContants.DIRECTION_UNIDIRECTIONAL)
 		}
+
+		val id_type_0 = sourceJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+		val id_type_1 = targetJsonObj.getString(JobBusConstant.RELATION_ID_TYPE_NAME)
+		val elpTypeUUID = elementLink.getUuid
+		val property_name_0 = elpTypeUUID
+		.concat(JobBusConstant.RELATION_LINK_UUID_SEPATATOR)
+		.concat(id_type_0)
+		.concat(JobBusConstant.RELATION_ID_NAME)
+		val property_name_1 = elpTypeUUID
+			.concat(JobBusConstant.RELATION_LINK_UUID_SEPATATOR)
+			.concat(id_type_1)
+			.concat(JobBusConstant.RELATION_ID_NAME)
+		solrDocument.setField(property_name_0, id_0)
+		solrDocument.setField(property_name_1, id_1)
 
 		solrDocument.setField(LinkContants.HBASE_TABLE_ID, id_label)
 
