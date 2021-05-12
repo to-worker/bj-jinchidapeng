@@ -21,7 +21,7 @@
         <scala.binary.version>2.10</scala.binary.version>
         <scala.version>2.10.5</scala.version>
         <avro.version>1.8.2</avro.version>
-        <solrj.version>7.2.1</solrj.version>
+        <solrj.version>8.8.2</solrj.version>
         <tldw-core.version>2.0-SNAPSHOT</tldw-core.version>
         <tldw-graphdb.version>2.0-SNAPSHOT</tldw-graphdb.version>
         <skip.tests>true</skip.tests>
